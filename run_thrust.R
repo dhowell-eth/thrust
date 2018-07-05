@@ -12,6 +12,7 @@ library(shinystan)
 library(Matrix)
 library(readr)
 library(mclust)
+library(factoextra)
 
 ## --------------- Run Parameters----------------------
 centfile = "./inputs/SyntheticUpliftCentroids.csv" # Data for drainage basin centroids
@@ -50,13 +51,13 @@ cluster_data = scale(array(cbind(cent$xobs,cent$u),dim=c(length(cent$u),2)),cent
 ## 1. Run GMM Clustering
 if (is.na(M)) {
   cluster_fit = Mclust(cluster_data)
-  plot(cluster_fit,what="BIC")
-  plot(cluster_fit,what="classification")
-  
+  #plot(cluster_fit,what="BIC")
+  #plot(cluster_fit,what="classification")
+  p_bic = factoextra::fviz_mclust(cluster_fit,"BIC",geom="line")
+  p_class = factoextra::fviz_mclust(cluster_fit,"classification",geom="point",xlab="Normalized Distance",ylab="Normalized Uplift")
 } else {
   cluster_fit = Mclust(cluster_data, G = M)
-  plot(cluster_fit,what="classification")
-  
+  p_class = factoextra::fviz_mclust(cluster_fit,"classification",geom="point",xlab="Normalized Distance",ylab="Normalized Uplift")
 }
 
 ## 2. Extract the best fitting number of populations according to BIC
@@ -143,4 +144,9 @@ p_xsection = ggplot(data=bpdata,aes(x=x,y=depth,color=c),alpha=0.1) +
               labs(colour="Fault Breakpoint") + 
               xlab("Along Profile Distance [m]") + 
               ylab("Depth [m]") 
+
+
+## 7. Display and/or print plots and other outputs
+print(p_bic)
+print(p_class)
 print(p_xsection)
