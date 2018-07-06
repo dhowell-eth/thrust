@@ -16,8 +16,10 @@ library(factoextra)
 library(ggpubr)
 library(RColorBrewer)
 ## --------------- Run Parameters----------------------
-centfile = "./inputs/SyntheticUpliftCentroids-LN.csv" # Data for drainage basin centroids
-linefile = "./inputs/SyntheticUpliftRefLine-LN.csv"   # Reference line
+centfile = "./inputs/SyntheticUpliftCentroids-LN.csv"      # Data for drainage basin centroids
+linefile = "./inputs/SyntheticUpliftRefLine-LN.csv"        # Reference line
+faultfile = "./inputs/SyntheticUpliftFaultGeometry-LN.csv" # Control fault geometry
+
 wkdir = "~/ETH/Thesis/Main Project Tasks/Fault Modeling/thrust/"
 model_src = "./uplift2dip.stan" # Stan source file
 
@@ -39,10 +41,16 @@ source("./bin/thrust_utils.R")
 # Read data files
 cent = read.csv(centfile)
 refline = read.csv(linefile)
-
+controlfault = read.csv(faultfile)
 # Make sure elevations have positive axis below MSL
 #refline$z = refline$z*-1
 #cent$zobs = cent$zobs*-1
+
+# Trim points past range front
+if (any(cent$xobs < x_mft)) {
+  cent = cent[-which(cent$xobs < x_mft),]
+}
+
 rad2deg <- function(rad) {(rad * 180) / (pi)}
 deg2rad <- function(deg) {(deg * pi) / (180)}
 elevation.profile = approxfun(refline$x,refline$z)
@@ -87,6 +95,12 @@ mu_t = mu_t[mu_LR,]
 
 ## 4. Use Stan to fit a fault dip to clustered Uplift Data 
 categories = cluster_fit$classification
+bp = array(0,dim=c(n_segments-1))
+for (i in 1:(n_segments-1)) {
+   thisx = cent$xobs[which(categories==mu_LR[i])]
+   nextx = cent$xobs[which(categories==mu_LR[i+1])]
+   bp[i] = (min(nextx)-max(thisx))/2 + max(thisx)
+ }
 standata = list(
     x = refline$x,
     z = refline$z,
@@ -123,9 +137,9 @@ mean_predicted_u = apply(u_samples,c(2),mean)
 ## 5. Pass theta samples and cluster means to geometry estimator
 geoms = array(0,dim=c(dim(dip_samples)[1],n_segments+1,2))
 for (i in 1:dim(dip_samples)[1]) {
-  geoms[i,,] = posteriordraw2geometry(dip_samples[i,],mu_t,standata$x,elevation.profile,standata$x1u,standata$z1u)
+  geoms[i,,] = posteriordraw2geometry_bp(dip_samples[i,],bp,standata$x,elevation.profile,standata$x1u,standata$z1u)
 }
-mean_geom = posteriordraw2geometry(mean_dip,mu_t,standata$x,elevation.profile,standata$x1u,standata$z1u)
+mean_geom = posteriordraw2geometry_bp(mean_dip,bp,standata$x,elevation.profile,standata$x1u,standata$z1u)
 
 ## 6. Plot geometries
 all_bp = array(0,dim=c(dim(geoms)[1]*dim(geoms)[2],3))
@@ -146,7 +160,7 @@ meanlinedf = data.frame(
 )
 
 # Posterior Draws
-plot_indices = round(seq(1,dim(geoms)[1],length.out=plot_every_n))
+plot_indices = round(seq(1,dim(geoms)[1],length.out=n_plot_draws))
 p_xsection = ggplot() 
 for (i in 1:length(plot_indices)) {
   thisgeom = geoms[plot_indices[i],,]
@@ -160,6 +174,8 @@ for (i in 1:length(plot_indices)) {
 p_xsection = p_xsection + 
               geom_point(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
               geom_line(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
+              geom_point(data=controlfault,aes(x=x,y=z,color="control"),shape=8) + 
+              geom_line(data=controlfault,aes(x=x,y=z,color="control")) +
               scale_y_reverse() + 
               coord_fixed() + 
               ggtitle("Fault Geometries") + 
@@ -168,9 +184,11 @@ p_xsection = p_xsection +
               ylab("Depth [m]") +
               scale_colour_manual(name="",
                                   values=c(mean="red",
-                                           draw="blue"),
+                                           draw="blue",
+                                           control="gray40"),
                                   labels=c(mean="Mean Posterior Prediction",
-                                           draw="Posterior Model Draws")) + 
+                                           draw="Posterior Model Draws",
+                                           control="Control Fault Geometry")) + 
               scale_alpha_manual(name="",
                                   values=c(draw=0.05),
                                   labels=c(),guide=FALSE)
@@ -180,11 +198,14 @@ print(p_xsection)
 
 uprofiledf = data.frame(
   x = standata$x_obs,
-  u_observed = standata$u_location,
+  u_observed = exp(standata$u_location),
+  unc_up = exp(standata$u_location + standata$u_scale),
+  unc_down = exp(standata$u_location - standata$u_scale),
   mean_prediction = mean_predicted_u
 )
 p_uprofile = ggplot(data=uprofiledf,aes(x=x)) + 
               geom_point(aes(y=u_observed,color="obs")) + 
+              geom_errorbar(aes(ymin=unc_down,ymax=unc_up,color="obs")) + 
               geom_point(aes(y=mean_prediction,color="pred")) + 
               scale_colour_manual(name="",
                                   values=c(
@@ -206,4 +227,4 @@ p_combined = ggarrange(p_uprofile, p_xsection, heights = c(4, 4), nrow = 2, alig
 ## 7. Display and/or print plots and other outputs
 print(p_bic)
 print(p_class)
-print(p_xsection)
+print(p_combined)

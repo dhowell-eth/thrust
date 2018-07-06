@@ -75,6 +75,7 @@ data{
   int groupid[nobs];
   
   real convergence;          // horizontal velocity, [m/yr]
+  real convergence_std;
   real x1u;                  // x coord. of fault tip at surface [m]
   real z1u;                  // z coord. of fault tip at surface [m]    
   vector[1] gamma_guess;
@@ -94,21 +95,28 @@ transformed data {
 parameters {
   vector<lower=-0.01745329,upper=0.5061455>[n_segments] theta; // fault segment angles [radians]
   real<lower=0.0> sigma_modelization; // modelization uncertainty
-  vector[nobs] u_latent;
+  vector<lower=0.0>[nobs] u_latent;
+  real<lower=0.0> s_latent;
 }
 transformed parameters {
-  vector[n_segments] upred;
-  upred = predict_uplift_theta_groups(theta,convergence,n_segments, gamma_guess,
+  vector[n_segments] upred; // Predicted Uplift by Zone
+  vector[nobs] predicted_uplift_obs; // Predicted Uplift at Obs Points Using Cluster Classifications
+  
+  upred = predict_uplift_theta_groups(theta,s_latent,n_segments, gamma_guess,
                                       x_r_placeholder,x_i_placeholder);
   upred  = upred*1000; // m/yr->mm/yr
+  
+  predicted_uplift_obs = upred[groupid];
 }
 model {
-  vector[nobs] predicted_uplift_obs;
+  
   
   // --------------------- PRE-PROCESSING ---------------------------------
-  predicted_uplift_obs = upred[groupid];
+ 
   // ----------------------- PRIORS ---------------------------------------
-  u_latent ~ normal(u_location,u_scale);
+  u_latent ~ lognormal(u_location,u_scale);
+  s_latent ~ normal(convergence,convergence_std);
+  
   theta ~ normal(0.2443461,0.2443461);
   sigma_modelization ~ normal(0,modelization_error_unc);
   
