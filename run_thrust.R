@@ -5,7 +5,7 @@
 #   * Modify Stan model to use lognormal dist. for uplift latent variable
 
 ## ------------- Load Libraries------------------------
-library("rstan", lib.loc="~/R/win-library/3.4")
+library("rstan")
 rstan_options(auto_write = TRUE)
 library(ggplot2)
 library(shinystan)
@@ -16,21 +16,28 @@ library(factoextra)
 library(ggpubr)
 library(RColorBrewer)
 ## --------------- Run Parameters----------------------
-centfile = "./inputs/SyntheticUpliftCentroids-LN.csv" # Data for drainage basin centroids
-linefile = "./inputs/SyntheticUpliftRefLine-LN.csv"   # Reference line
+centfile = "./inputs/Line4_PreprocessedCentroids.csv"      # Data for drainage basin centroids
+linefile = "./inputs/Line4_ReferenceLine.csv"        # Reference line
+xcol = "xobs"
+zcol = "zobs"
+uloccol = "u_location"
+uscalecol = "u_scale"
+
+
 wkdir = "~/ETH/Thesis/Main Project Tasks/Fault Modeling/thrust/"
 model_src = "./uplift2dip.stan" # Stan source file
 
-x_mft = 1e3                 # x-coordinate of where fault reaches surface [m]
-convergence_rate = 21.5e-3  # convergence rate, (along the deepest portion of the decollement) [m/yr]
-convergence_rate_unc = 0.25e-3 # convergence rate uncertainty [m/yr]
+x_mft = 0                 # x-coordinate of where fault reaches surface [m]
+convergence_rate = 21.5  # convergence rate, (along the deepest portion of the decollement) [m/yr]
+convergence_rate_unc = 0.5 # convergence rate uncertainty [m/yr]
 
-M = 3                      # (Optional: NA or int), forces clustering to a certain number of fault segments
+M = 3                     # (Optional: NA or int), forces clustering to a certain number of fault segments
 
-nChains = 2                 # Number of Markov Chains
+nChains = 4                 # Number of Markov Chains
 nCores = 1                  # Number of cores to use for processing
 
 n_plot_draws = 100
+plot_margin = 5000
 
 options(mc.cores = nCores)
 setwd(wkdir)
@@ -40,15 +47,24 @@ source("./bin/thrust_utils.R")
 cent = read.csv(centfile)
 refline = read.csv(linefile)
 
-# Make sure elevations have positive axis below MSL
-#refline$z = refline$z*-1
-#cent$zobs = cent$zobs*-1
+cent["xobs"] = cent[xcol]
+cent["zobs"] = cent[zcol]
+cent["u_location"] = cent[uloccol]
+cent["u_scale"] = cent[uscalecol]
+
+# Trim points past range front
+if (any(cent$xobs < x_mft)) {
+  cent = cent[-which(cent$xobs < x_mft),]
+}
+cent = cent[order(cent$xobs),]
+
+
 rad2deg <- function(rad) {(rad * 180) / (pi)}
 deg2rad <- function(deg) {(deg * pi) / (180)}
 elevation.profile = approxfun(refline$x,refline$z)
 
 # Normalize data for clustering
-cluster_data = scale(array(cbind(cent$xobs,exp(cent$u_location)),dim=c(length(cent$u),2)),center=TRUE,scale=TRUE)
+cluster_data = scale(array(cbind(cent$xobs,exp(cent$u_location)),dim=c(length(cent$u_location),2)),center=TRUE,scale=TRUE)
 
 ## ------------- Begin Modeling ----------------------
 
@@ -86,7 +102,14 @@ mu_LR = order(mu_t[,1])
 mu_t = mu_t[mu_LR,]
 
 ## 4. Use Stan to fit a fault dip to clustered Uplift Data 
+# Prep data structure to pass to stan
 categories = cluster_fit$classification
+bp = array(0,dim=c(n_segments-1))
+for (i in 1:(n_segments-1)) {
+   thisx = cent$xobs[which(categories==mu_LR[i])]
+   nextx = cent$xobs[which(categories==mu_LR[i+1])]
+   bp[i] = (min(nextx)-max(thisx))/2 + max(thisx)
+ }
 standata = list(
     x = refline$x,
     z = refline$z,
@@ -104,12 +127,21 @@ standata = list(
     x1u =  x_mft,
     z1u = elevation.profile(x_mft),
     N=nrow(cent),                     
-    modelization_error_unc = 5        # Weakly informative prior on modelization uncertainty (mm/yr)
+    modelization_error_unc = 1.5        # Weakly informative prior on modelization uncertainty (mm/yr)
 )
 
+# Compile Model Code
 sm = stan_model(model_src)
 
-fit = sampling(sm,data=standata)
+## Specify Any Non-Default Parameter Initialization Points Here
+# init_pt = list()
+# for (i in 1:nChains){
+#   this_init = list(
+#     u_latent = array(rep(1,standata$nobs)))
+#   init_pt[[length(init_pt)+1]] = this_init
+# }
+
+fit = sampling(sm,data=standata,iter=4000,chains=nChains,control=list(adapt_delta=0.95,max_treedepth=14))
 print("Sampling Complete, HMC Diagnostics:")
 check_hmc_diagnostics(fit)
 
@@ -119,13 +151,16 @@ dip_samples = dip_samples[,mu_LR] # Reording theta to match clusters
 mean_dip = apply(dip_samples,c(2),mean)
 u_samples = samples$predicted_uplift_obs
 mean_predicted_u = apply(u_samples,c(2),mean)
+sigma_samples = exp(samples$sigma_modelization)
+mean_sigma = mean(sigma_samples)
+
 
 ## 5. Pass theta samples and cluster means to geometry estimator
 geoms = array(0,dim=c(dim(dip_samples)[1],n_segments+1,2))
 for (i in 1:dim(dip_samples)[1]) {
-  geoms[i,,] = posteriordraw2geometry(dip_samples[i,],mu_t,standata$x,elevation.profile,standata$x1u,standata$z1u)
+  geoms[i,,] = posteriordraw2geometry_bp(dip_samples[i,],bp,standata$x,elevation.profile,standata$x1u,standata$z1u)
 }
-mean_geom = posteriordraw2geometry(mean_dip,mu_t,standata$x,elevation.profile,standata$x1u,standata$z1u)
+mean_geom = posteriordraw2geometry_bp(mean_dip,bp,standata$x,elevation.profile,standata$x1u,standata$z1u)
 
 ## 6. Plot geometries
 all_bp = array(0,dim=c(dim(geoms)[1]*dim(geoms)[2],3))
@@ -145,8 +180,11 @@ meanlinedf = data.frame(
   depth = mean_geom[,2]
 )
 
+xmin = min(cent$xobs) - plot_margin
+xmax = max(cent$xobs) + plot_margin
+
 # Posterior Draws
-plot_indices = round(seq(1,dim(geoms)[1],length.out=plot_every_n))
+plot_indices = round(seq(1,dim(geoms)[1],length.out=n_plot_draws))
 p_xsection = ggplot() 
 for (i in 1:length(plot_indices)) {
   thisgeom = geoms[plot_indices[i],,]
@@ -161,7 +199,7 @@ p_xsection = p_xsection +
               geom_point(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
               geom_line(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
               scale_y_reverse() + 
-              coord_fixed() + 
+              coord_fixed(ratio=2,xlim=c(xmin,xmax)) + 
               ggtitle("Fault Geometries") + 
               labs(colour="Fault Breakpoint") + 
               xlab("Along Profile Distance [m]") + 
@@ -175,16 +213,16 @@ p_xsection = p_xsection +
                                   values=c(draw=0.05),
                                   labels=c(),guide=FALSE)
 
-print(p_xsection)
-
-
 uprofiledf = data.frame(
   x = standata$x_obs,
-  u_observed = standata$u_location,
+  u_observed = exp(standata$u_location),
+  unc_up = exp(standata$u_location + standata$u_scale),
+  unc_down = exp(standata$u_location - standata$u_scale),
   mean_prediction = mean_predicted_u
 )
 p_uprofile = ggplot(data=uprofiledf,aes(x=x)) + 
               geom_point(aes(y=u_observed,color="obs")) + 
+              geom_errorbar(aes(ymin=unc_down,ymax=unc_up,color="obs")) + 
               geom_point(aes(y=mean_prediction,color="pred")) + 
               scale_colour_manual(name="",
                                   values=c(
@@ -196,7 +234,8 @@ p_uprofile = ggplot(data=uprofiledf,aes(x=x)) +
                                     pred="Mean Posterior Prediction")) + 
               ylab("Uplift [mm/yr]") + 
               xlab("") + 
-              ggtitle("Uplift Field")
+              ggtitle("Uplift Field") + 
+              coord_cartesian(xlim=c(xmin,xmax))
               
 p_combined = ggarrange(p_uprofile, p_xsection, heights = c(4, 4), nrow = 2, align = "v")
 
@@ -206,4 +245,14 @@ p_combined = ggarrange(p_uprofile, p_xsection, heights = c(4, 4), nrow = 2, alig
 ## 7. Display and/or print plots and other outputs
 print(p_bic)
 print(p_class)
-print(p_xsection)
+print(p_combined)
+
+outtext = sprintf(
+  "Run Complete! Fit Model for %i segments.
+  Results:
+  Theta (degrees):
+  %s
+  Modelization Error:
+  %f"
+,n_segments,paste(rad2deg(mean_dip),collapse=", "),mean_sigma)
+writeLines(outtext)

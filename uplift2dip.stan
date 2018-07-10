@@ -95,8 +95,8 @@ transformed data {
 parameters {
   vector<lower=-0.01745329,upper=0.5061455>[n_segments] theta; // fault segment angles [radians]
   real<lower=0.0> sigma_modelization; // modelization uncertainty
-  vector<lower=0.0>[nobs] u_latent;
-  real<lower=0.0> s_latent;
+  vector[nobs] u_latent;
+  real s_latent;
 }
 transformed parameters {
   vector[n_segments] upred; // Predicted Uplift by Zone
@@ -104,7 +104,7 @@ transformed parameters {
   
   upred = predict_uplift_theta_groups(theta,s_latent,n_segments, gamma_guess,
                                       x_r_placeholder,x_i_placeholder);
-  upred  = upred*1000; // m/yr->mm/yr
+  //upred  = upred*1000; // m/yr->mm/yr
   
   predicted_uplift_obs = upred[groupid];
 }
@@ -114,7 +114,7 @@ model {
   // --------------------- PRE-PROCESSING ---------------------------------
  
   // ----------------------- PRIORS ---------------------------------------
-  u_latent ~ lognormal(u_location,u_scale);
+  u_latent ~ normal(u_location,u_scale);
   s_latent ~ normal(convergence,convergence_std);
   
   theta ~ normal(0.2443461,0.2443461);
@@ -122,5 +122,5 @@ model {
   
   // ----------------------LIKELIHOOD FUNCTIONS----------------------------
   // Uplift Rates
-  target += normal_lpdf(u_latent | predicted_uplift_obs, sigma_modelization);
+  target += normal_lpdf(u_latent | log(predicted_uplift_obs), sigma_modelization);
 }
