@@ -65,3 +65,32 @@ posteriordraw2geometry_bp <- function(theta,surface_bpx,x,elevation.profile,x1u,
   
   return(fault_bp)
 }
+
+distance2xy <- function(refline,geomXY) {
+  # Gets the interpolated real X,Y coordinates given a distance along the reference line
+  trueXY = array(0.0,dim=dim(geomXY))
+  
+  for (i_pt in 1:dim(geomXY)[1]) {
+    i_closest = which.min(abs(refline$x-geomXY[i_pt,1]))
+    # If the closest point matches the point of interest, take its coordinates directly
+    if (refline$x[i_closest] == geomXY[i_pt,1]) {
+      trueXY[i_pt,1] = refline$coordx[i_closest]
+      trueXY[i_pt,2] = refline$coordy[i_closest]
+      next
+    } 
+    # Otherwise, inteprolate between the two neighboring points
+    if (refline$x[i_closest] < geomXY[i_pt,1]){
+      i_neighbor = i_closest+1
+    } else {
+      i_neighbor = i_closest-1
+    }
+    
+    w1 = 1 - abs(geomXY[i_pt,1]-refline$x[i_closest]) / abs(refline$x[i_closest]-refline$x[i_neighbor])
+    w2 = 1 - abs(geomXY[i_pt,1]-refline$x[i_neighbor]) / abs(refline$x[i_closest]-refline$x[i_neighbor])
+    ptx = refline$coordx[i_closest]*w1 + refline$coordx[i_neighbor]*w2
+    pty = refline$coordy[i_closest]*w1 + refline$coordy[i_neighbor]*w2
+    trueXY[i_pt,1] = ptx
+    trueXY[i_pt,2] = pty
+  }
+  return(trueXY)
+}

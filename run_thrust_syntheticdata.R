@@ -24,8 +24,8 @@ wkdir = "~/ETH/Thesis/Main Project Tasks/Fault Modeling/thrust/"
 model_src = "./uplift2dip.stan" # Stan source file
 
 x_mft = 1e3                 # x-coordinate of where fault reaches surface [m]
-convergence_rate = 21.5e-3  # convergence rate, (along the deepest portion of the decollement) [m/yr]
-convergence_rate_unc = 0.25e-3 # convergence rate uncertainty [m/yr]
+convergence_rate = 21.5  # convergence rate, (along the deepest portion of the decollement) [m/yr]
+convergence_rate_unc = 0.25 # convergence rate uncertainty [m/yr]
 
 M = 3                      # (Optional: NA or int), forces clustering to a certain number of fault segments
 
@@ -96,10 +96,13 @@ mu_t = mu_t[mu_LR,]
 ## 4. Use Stan to fit a fault dip to clustered Uplift Data 
 categories = cluster_fit$classification
 bp = array(0,dim=c(n_segments-1))
+bp_unc = array(0,dim=c(n_segments-1))
+
 for (i in 1:(n_segments-1)) {
    thisx = cent$xobs[which(categories==mu_LR[i])]
    nextx = cent$xobs[which(categories==mu_LR[i+1])]
    bp[i] = (min(nextx)-max(thisx))/2 + max(thisx)
+   bp_unc[i] = (min(nextx)-max(thisx)) 
  }
 standata = list(
     x = refline$x,

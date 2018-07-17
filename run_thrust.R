@@ -16,8 +16,11 @@ library(factoextra)
 library(ggpubr)
 library(RColorBrewer)
 ## --------------- Run Parameters----------------------
-centfile = "./inputs/Line4_PreprocessedCentroids.csv"      # Data for drainage basin centroids
-linefile = "./inputs/Line4_ReferenceLine.csv"        # Reference line
+centfile = "./inputs/Line9_PreprocessedCentroids.csv"      # Data for drainage basin centroids
+linefile = "./inputs/Line9_ReferenceLine.csv"        # Reference line
+
+outtag = "Line9"
+outdir = "./results/"
 xcol = "xobs"
 zcol = "zobs"
 uloccol = "u_location"
@@ -28,16 +31,20 @@ wkdir = "~/ETH/Thesis/Main Project Tasks/Fault Modeling/thrust/"
 model_src = "./uplift2dip.stan" # Stan source file
 
 x_mft = 0                 # x-coordinate of where fault reaches surface [m]
-convergence_rate = 21.5  # convergence rate, (along the deepest portion of the decollement) [m/yr]
-convergence_rate_unc = 0.5 # convergence rate uncertainty [m/yr]
+convergence_rate = 21.2  # convergence rate, (along the deepest portion of the decollement) [m/yr]
+convergence_rate_unc = 2 # convergence rate uncertainty [m/yr]
 
-M = 3                     # (Optional: NA or int), forces clustering to a certain number of fault segments
+M = NA                     # (Optional: NA or int), forces clustering to a certain number of fault segments
+
+ONLY_CLUSTER = FALSE
+
 
 nChains = 4                 # Number of Markov Chains
 nCores = 1                  # Number of cores to use for processing
 
 n_plot_draws = 100
 plot_margin = 5000
+vertical_exag = 2
 
 options(mc.cores = nCores)
 setwd(wkdir)
@@ -78,6 +85,14 @@ if (is.na(M)) {
 } else {
   cluster_fit = Mclust(cluster_data, G = M)
   p_class = factoextra::fviz_mclust(cluster_fit,"classification",geom="point",xlab="Normalized Distance",ylab="Normalized Uplift")
+}
+
+if (ONLY_CLUSTER) {
+  if (exists("p_bic")) {
+    print(p_bic)
+  }
+  print(p_class)
+  stop("Stopping After Clustering Step. Adjust CLUSTER_ONLY parameter to run full script.")
 }
 
 ## 2. Extract the best fitting number of populations according to BIC
@@ -142,7 +157,7 @@ sm = stan_model(model_src)
 # }
 
 fit = sampling(sm,data=standata,iter=4000,chains=nChains,control=list(adapt_delta=0.95,max_treedepth=14))
-print("Sampling Complete, HMC Diagnostics:")
+writeLines("Sampling Complete, HMC Diagnostics:")
 check_hmc_diagnostics(fit)
 
 samples = rstan::extract(fit)
@@ -196,19 +211,21 @@ for (i in 1:length(plot_indices)) {
 }
 # Mean Geometry
 p_xsection = p_xsection + 
-              geom_point(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
               geom_line(data=meanlinedf,aes(x=x,y=depth,color="mean"),size=1) + 
+              geom_point(data=meanlinedf,aes(x=x,y=depth,color="meanbp"),size=1) + 
               scale_y_reverse() + 
-              coord_fixed(ratio=2,xlim=c(xmin,xmax)) + 
+              coord_fixed(ratio=vertical_exag,xlim=c(xmin,xmax)) + 
               ggtitle("Fault Geometries") + 
               labs(colour="Fault Breakpoint") + 
               xlab("Along Profile Distance [m]") + 
               ylab("Depth [m]") +
               scale_colour_manual(name="",
                                   values=c(mean="red",
-                                           draw="blue"),
+                                           draw="blue",
+                                           meanbp='gray10'),
                                   labels=c(mean="Mean Posterior Prediction",
-                                           draw="Posterior Model Draws")) + 
+                                           draw="Posterior Model Draws",
+                                           meanbp="Mean Fault Breakpoints")) + 
               scale_alpha_manual(name="",
                                   values=c(draw=0.05),
                                   labels=c(),guide=FALSE)
@@ -221,9 +238,9 @@ uprofiledf = data.frame(
   mean_prediction = mean_predicted_u
 )
 p_uprofile = ggplot(data=uprofiledf,aes(x=x)) + 
-              geom_point(aes(y=u_observed,color="obs")) + 
-              geom_errorbar(aes(ymin=unc_down,ymax=unc_up,color="obs")) + 
-              geom_point(aes(y=mean_prediction,color="pred")) + 
+              geom_point(aes(y=u_observed,color="obs"),size=0.5) + 
+              geom_errorbar(aes(ymin=unc_down,ymax=unc_up,color="obs"),size=0.5) + 
+              geom_point(aes(y=mean_prediction,color="pred"),size=0.25) + 
               scale_colour_manual(name="",
                                   values=c(
                                     obs="gray1",
@@ -243,7 +260,9 @@ p_combined = ggarrange(p_uprofile, p_xsection, heights = c(4, 4), nrow = 2, alig
 
 
 ## 7. Display and/or print plots and other outputs
-print(p_bic)
+if (exists("p_bic")) {
+  print(p_bic)
+}
 print(p_class)
 print(p_combined)
 
@@ -256,3 +275,53 @@ outtext = sprintf(
   %f"
 ,n_segments,paste(rad2deg(mean_dip),collapse=", "),mean_sigma)
 writeLines(outtext)
+
+fitfile = paste(outdir,outtag,"_fit.RDS",sep="")
+summaryfile = paste(outdir,outtag,"_summary.txt",sep="")
+bicfile = paste(outdir,outtag,"_BIC.pdf",sep="")
+clusteringfile = paste(outdir,outtag,"_Clustering.pdf",sep="")
+profilefile = paste(outdir,outtag,"_GeometryProfile.pdf",sep="")
+geomfile = paste(outdir,outtag,"_MeanGeometry.csv",sep="")
+
+fitsum = summary(fit,pars=c("theta","sigma_modelization"))
+fitsum = fitsum$summary
+# transform sigma from log to real space
+fitsum[n_segments+1,1:(dim(fitsum)[2]-2)] = exp(fitsum[n_segments+1,1:(dim(fitsum)[2]-2)])
+sumtext = paste(capture.output(print(fitsum)),collapse="\n")
+
+meanxy = distance2xy(refline,mean_geom)
+meangeomdf = data.frame(
+  x_m = meanxy[,1],
+  y_m = meanxy[,2],
+  d_m = mean_geom[,1],
+  z_m = mean_geom[,2]
+)
+geomtext = paste(capture.output(print(meangeomdf,row.names=FALSE)),collapse="\n")
+
+summarytext = sprintf("
+\"thrust\" Model Summary:
+%s
+
+Name: %s
+N_Segments: %i
+
+Mean Geometry:
+%s
+
+Segment Dips:
+%s
+",format(Sys.time(), "%a %b %d %X %Y"),outtag,n_segments,geomtext,sumtext)
+
+# Write outputs
+saveRDS(fit,file=fitfile)
+write(summarytext, file = summaryfile)
+write.csv(meangeomdf,file=geomfile,row.names=FALSE)
+if (exists("p_bic")) {
+  # Remove Auto-Generated Best Fit Line
+  p_bic$layers[[3]] = NULL
+  ggsave(bicfile,plot=p_bic,height=4,width=5,units="in",dpi=200,device="pdf")
+}
+ggsave(clusteringfile,plot=p_class,height=4,width=5,units="in",dpi=200,device="pdf")
+ggsave(profilefile,plot=p_combined,height=6,width=8,units="in",dpi=200,device="pdf")
+
+
